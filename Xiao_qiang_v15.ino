@@ -27,15 +27,15 @@ unsigned long interval = 100 ; // time unit = ms
 int command=0, sonarDist=0, avgCount=0, msgCount=0;
 double m1_PID_input=0.0, m2_PID_input=0.0, m2DC = 0.0, m1DC = 0.0, m1SpeedAdjustment, m2SpeedAdjustment, targetSpeed = 0.0; // note: adjust target speed at the case statements
 volatile int m2MovementCount=0, m1MovementCount=0, m2Ticks=0, m1Ticks=0;
-double m2_P = 1.04, m2_I = 0.0001, m2_D = 0.001;
-double m1_P = 1.08, m1_I = 0.0001, m1_D = 0.001;
-double m2_SPF_P = 1.05, m1_SPF_P = 1.16;
-String commandBuffer = "";
+double m2_P = 1.042, m2_I = 0.0001, m2_D = 0.001;
+double m1_P = 1.04, m1_I = 0.0001, m1_D = 0.001;
+double m2_SPF_P = 1.01, m1_SPF_P = 1.01;
+String commandBuffer = "";// 36363d13b2bb312a131b2a3c6
 boolean sendSensorReading=false, explorationMode=false, startFlag=false;
 int leftSideSensor[samples], leftDiagSensor[samples], rightSideSensor[samples], rightDiagSensor[samples], rightAdjustmentSensor[samples], leftAdjustmentSensor[samples];
 int leftSideSensorMedian=0, leftDiagSensorMedian=0, rightDiagSensorMedian=0, rightSideSensorMedian=0, rightAdjustmentSensorMedian=0, leftAdjustmentSensorMedian;
 int obstaclePositions[7];
-static int lastCommand = 0; // testing
+static int lastCommand = 0;
 //Specify the links and initial tuning parameters
 PID leftPID(&m2_PID_input, &m2SpeedAdjustment, &targetSpeed, m2_P, m2_I , m2_D, DIRECT);
 PID rightPID(&m1_PID_input, &m1SpeedAdjustment, &targetSpeed, m1_P, m1_I, m1_D, DIRECT);
@@ -110,6 +110,8 @@ void loop(){
         command = commandBuffer.charAt(0)-48;
         sendSensorReading = true;
         commandBuffer = "";
+//        if(!explorationMode)
+//          sensor_cooldown_duration=600;
       }
       else{
         command = 0;
@@ -197,6 +199,19 @@ void loop(){
       command = 0;
     break;
     
+    case 8: // realign robot centre to make sure it is within 3x3 grid, command = "C"
+      rotateLeft90();
+      repositionRobotFront();
+      realignRobotCentre();
+      repositionRobotFront();
+      rotateRight90();
+      repositionRobotRightSide();
+      sendSensorReading = true;
+      msgCount = (msgCount+1)%5;
+      lastCommand = command;
+      command = 0;
+    break;
+    
     case 49: //  move 2 grid
       // Setting wheels to move robot forward
       digitalWrite(m1INB, HIGH);
@@ -230,7 +245,7 @@ void loop(){
       leftPID.SetTunings(m2_SPF_P, m2_I, m2_D);
       rightPID.SetTunings(m1_SPF_P, m1_I, m1_D);
       targetSpeed = 600;
-      for(m2MovementCount=0, m1MovementCount=0, m1Ticks=0, m2Ticks=0, avgCount=0; avgCount<765;){
+      for(m2MovementCount=0, m1MovementCount=0, m1Ticks=0, m2Ticks=0, avgCount=0; avgCount<775;){
         moveForward();
         avgCount = (m2MovementCount+m1MovementCount)/2;
       }
@@ -255,7 +270,7 @@ void loop(){
       targetSpeed = 600;
       leftPID.SetTunings(m2_SPF_P, m2_I, m2_D);
       rightPID.SetTunings(m1_SPF_P, m1_I, m1_D);
-      for(m2MovementCount=0, m1MovementCount=0, m1Ticks=0, m2Ticks=0, avgCount=0; avgCount<1045;){
+      for(m2MovementCount=0, m1MovementCount=0, m1Ticks=0, m2Ticks=0, avgCount=0; avgCount<1080;){
         moveForward();
         avgCount = (m2MovementCount+m1MovementCount)/2;
       }
@@ -430,6 +445,7 @@ void serialEvent(){
     char inChar = (char)Serial.read();
     if(inChar == 's'){ // s indicate start of shortest path run, sensor readings will not be sent
       explorationMode = false;
+      //sensor_cooldown_duration = 100;
     }
     else if(inChar != 's'){   
       commandBuffer += inChar;
@@ -515,7 +531,7 @@ void obstacleIdentification(){
   else 
     obstaclePositions[6] = 0;
     
-  if(sendSensorReading&&explorationMode){
+  if((sendSensorReading&&explorationMode)||(!explorationMode&&(commandBuffer.length()==0))){
     Serial.print("pc:");
     Serial.print(obstaclePositions[0]);
     Serial.print(obstaclePositions[1]);
@@ -549,7 +565,7 @@ int rightAdjustmentSensorReading(){
 }
 
 int leftAdjustmentSensorReading(){
- return ((4600/(analogRead(1)+5))-3); 
+ return ((4400/(analogRead(1)+5))-3); 
 }
 
 void computeMedian(){
@@ -602,6 +618,37 @@ void leftAdjustmentInsertionSort(){
         int temp = leftAdjustmentSensor[j];
         leftAdjustmentSensor[j] = leftAdjustmentSensor[j-1];
         leftAdjustmentSensor[j-1] = temp;
+      }
+    }
+  } 
+}
+
+void computeRightAdjustmentMedian(){
+  static int diagIndex=0;
+  // get reading
+  rightSideSensor[diagIndex] = rightSideSensorReading();
+  rightAdjustmentSensor[diagIndex] = rightAdjustmentSensorReading();
+  // sort data     
+  rightAdjustmentInsertionSort();
+  
+  rightSideSensorMedian = rightSideSensor[samples/2];
+  rightAdjustmentSensorMedian = rightAdjustmentSensor[samples/2];
+  
+  diagIndex = (diagIndex+1)%samples;
+}
+
+void rightAdjustmentInsertionSort(){
+  for(int i=0; i<samples; i++){
+    for(int j=i; j>0;j--){
+      if(rightSideSensor[j]<rightSideSensor[j-1]){
+        int temp = rightSideSensor[j];
+        rightSideSensor[j] = rightSideSensor[j-1];
+        rightSideSensor[j-1] = temp;
+      }
+      if(rightAdjustmentSensor[j]<rightAdjustmentSensor[j-1]){
+        int temp = rightAdjustmentSensor[j];
+        rightAdjustmentSensor[j] = rightAdjustmentSensor[j-1];
+        rightAdjustmentSensor[j-1] = temp;
       }
     }
   } 
@@ -762,7 +809,7 @@ void rotateRight90(){
   delay(300);
   analogWrite(m2PWM,0.2*255);
   analogWrite(m1PWM,0.2*255);
-  while(avgCount<413){
+  while(avgCount<412){
     avgCount = (m2MovementCount+m1MovementCount)/2;
   }
   analogWrite(m2PWM, 0*255);
@@ -770,9 +817,6 @@ void rotateRight90(){
 }
 
 void repositionRobotFront(){
-  // compute median sensor readings to know if robot is facing straight
-//  for(long start_time = millis(); (millis()-start_time)<sensor_cooldown_duration;)
-//    computeMedian();
   if(leftDiagSensorMedian>rightDiagSensorMedian){  
     // set wheels to rotate right
     digitalWrite(m1INB, LOW);
@@ -799,72 +843,87 @@ void repositionRobotFront(){
     while(leftDiagSensorMedian<rightDiagSensorMedian)
       computeMedian();
   }
-  analogWrite(m2PWM, 0);
-  analogWrite(m1PWM, 0);
+  // Setting wheels to brake
+  digitalWrite(m1INB, LOW);
+  digitalWrite(m2INB, LOW);
+  digitalWrite(m1INA, LOW);
+  digitalWrite(m2INA, LOW);
+  analogWrite(m2PWM, 0.5*255);
+  analogWrite(m1PWM, 0.5*255);
 }
 
 void repositionRobotLeftSide(){
-  if(leftSideSensorMedian>leftAdjustmentSensorMedian){
-    // set wheels to rotate right
-    digitalWrite(m1INB, LOW);
-    digitalWrite(m2INB, HIGH);
-    digitalWrite(m1INA, HIGH);
-    digitalWrite(m2INA, LOW);
-    // start rotating
-    analogWrite(m2PWM, 0.16*255);
-    analogWrite(m1PWM, 0.16*255);
-    while(leftSideSensorMedian>leftAdjustmentSensorMedian){
-      computeLeftAdjustmentMedian();
+  while(leftSideSensorMedian!=leftAdjustmentSensorMedian){
+    m2MovementCount=0;
+    m1MovementCount=0;
+    avgCount=0; 
+    if(leftSideSensorMedian>leftAdjustmentSensorMedian){
+      // set wheels to rotate right
+      digitalWrite(m1INB, LOW);
+      digitalWrite(m2INB, HIGH);
+      digitalWrite(m1INA, HIGH);
+      digitalWrite(m2INA, LOW);
+    } else if(leftSideSensorMedian<leftAdjustmentSensorMedian){
+      // set wheels to rotate left
+      digitalWrite(m1INB, HIGH);
+      digitalWrite(m2INB, LOW);
+      digitalWrite(m1INA, LOW);
+      digitalWrite(m2INA, HIGH);
     }
-  } else if(leftSideSensorMedian<leftAdjustmentSensorMedian){
-    // set wheels to rotate left
-    digitalWrite(m1INB, HIGH);
+    // start rotating
+    analogWrite(m2PWM, 0.2*255);
+    analogWrite(m1PWM, 0.2*255);
+    while(avgCount<5){
+      avgCount = (m2MovementCount+m1MovementCount)/2;
+    }
+    // Setting wheels to brake
+    digitalWrite(m1INB, LOW);
     digitalWrite(m2INB, LOW);
     digitalWrite(m1INA, LOW);
-    digitalWrite(m2INA, HIGH);
-    // start rotating
-    analogWrite(m2PWM, 0.16*255);
-    analogWrite(m1PWM, 0.16*255);
-    
-    while(leftSideSensorMedian<leftAdjustmentSensorMedian)
-        computeLeftAdjustmentMedian();
-  
-  }
-  analogWrite(m2PWM, 0);
-  analogWrite(m1PWM, 0);
+    digitalWrite(m2INA, LOW);
+    analogWrite(m2PWM, 0.5*255);
+    analogWrite(m1PWM, 0.5*255);
+    for(long startTime=millis();(millis()-startTime)<50;){
+      computeLeftAdjustmentMedian();
+    }
+  } 
 }
 
 void repositionRobotRightSide(){
-  // compute median sensor readings to know if robot is facing straight
-//  for(long start_time = millis(); (millis()-start_time)<(sensor_cooldown_duration+200);)
-//    computeMedian();
-  if(rightSideSensorMedian>rightAdjustmentSensorMedian){  
-    // set wheels to rotate left
-    digitalWrite(m1INB, HIGH);
+  while(rightSideSensorMedian!=rightAdjustmentSensorMedian){
+    m2MovementCount=0;
+    m1MovementCount=0;
+    avgCount=0; 
+    if(rightSideSensorMedian>rightAdjustmentSensorMedian){  
+      // set wheels to rotate left
+      digitalWrite(m1INB, HIGH);
+      digitalWrite(m2INB, LOW);
+      digitalWrite(m1INA, LOW);
+      digitalWrite(m2INA, HIGH);
+    } else if(rightSideSensorMedian<rightAdjustmentSensorMedian){
+      // set wheels to rotate right
+      digitalWrite(m1INB, LOW);
+      digitalWrite(m2INB, HIGH);
+      digitalWrite(m1INA, HIGH);
+      digitalWrite(m2INA, LOW);
+    }
+    // start rotating
+    analogWrite(m2PWM, 0.2*255);
+    analogWrite(m1PWM, 0.2*255);
+    while(avgCount<5){
+      avgCount = (m2MovementCount+m1MovementCount)/2;
+    }
+    // Setting wheels to brake
+    digitalWrite(m1INB, LOW);
     digitalWrite(m2INB, LOW);
     digitalWrite(m1INA, LOW);
-    digitalWrite(m2INA, HIGH);
-    // start rotating
-    analogWrite(m2PWM, 0.2*255);
-    analogWrite(m1PWM, 0.2*255);
-    
-    while(rightSideSensorMedian>rightAdjustmentSensorMedian)
-      computeMedian();
-  } else if(rightSideSensorMedian<rightAdjustmentSensorMedian){
-    // set wheels to rotate right
-    digitalWrite(m1INB, LOW);
-    digitalWrite(m2INB, HIGH);
-    digitalWrite(m1INA, HIGH);
     digitalWrite(m2INA, LOW);
-    // start rotating
-    analogWrite(m2PWM, 0.2*255);
-    analogWrite(m1PWM, 0.2*255);
-    
-    while(rightSideSensorMedian<rightAdjustmentSensorMedian)
-      computeMedian();
+    analogWrite(m2PWM, 0.5*255);
+    analogWrite(m1PWM, 0.5*255);
+    for(long startTime=millis();(millis()-startTime)<50;){
+      computeRightAdjustmentMedian();
+    }
   } 
-  analogWrite(m2PWM, 0);
-  analogWrite(m1PWM, 0);
 }
 void backAwayFromWall(){
   // get sonar dist
